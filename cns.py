@@ -24,10 +24,11 @@ match the CLI's ``ERSDESampler._sample_noise`` bit-for-bit). With CNS disabled
 the math is identical to stock ``er_sde``.
 
 Notes:
-  * **Anima-calibrated.** The shipped γ is measured on Anima's spectral-bias
-    staircase at cfg=4. On a non-Anima model it is mis-calibrated (still
-    variance-conserving, so degraded-not-broken), but the global dropdown entry
-    gives no per-model signal — intended for Anima workflows.
+  * **Anima- and MOSS-calibrated.** The auto-downloaded γ is measured on
+    Anima's spectral-bias staircase at cfg=4. A MOSS-Image model (detected from
+    the live diffusion_model) switches to the bundled MOSS γ and recolors on the
+    un-patchified grid. Any other model gets the Anima γ, mis-calibrated (still
+    variance-conserving, so degraded-not-broken).
   * **er_sde only.** This is the stochastic ER-SDE solver; there is no ODE/euler
     surface for colored noise (white draw → no-op). Composes with the Spectrum
     model wrapper and the DCW / SMC-CFG / mod-guidance model patches (different
@@ -169,28 +170,77 @@ class CNSRecolorer(_CNSRecolorerCore):
 
 
 # ---------------------------------------------------------------------------
-# Lazy γ singleton — load the npz once, build a fresh recolorer per sample
-# (so a per-sample aspect change can't get pinned by a stale aspect lock).
+# MOSS-Image: its own γ, bundled (calibrated in anima_lora,
+# bench/moss_spectrum/cns_calibrate.py, 1024² cfg 3 shift 5), and the FFT on the
+# un-patchified 32 ch /8 grid (anima_lora library/moss/cns.py). On the packed
+# 128 ch grid the top octave of the FLUX.2 latent sits in the 2×2 phase channels,
+# out of reach of a spatial filter. ComfyUI's Flux2 VAE packs (c pi pj), the
+# same order.
 # ---------------------------------------------------------------------------
 
-_GAMMA_ARRAYS: Optional[dict] = None
+MOSS_GAMMA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "moss_cns_gamma.npz")
+
+
+def _unpatchify(z: torch.Tensor) -> torch.Tensor:
+    """``(B,128,h,w)`` → ``(B,32,2h,2w)``."""
+    b, c, h, w = z.shape
+    return (
+        z.reshape(b, c // 4, 2, 2, h, w)
+        .permute(0, 1, 4, 2, 5, 3)
+        .reshape(b, c // 4, 2 * h, 2 * w)
+    )
+
+
+def _patchify(z: torch.Tensor) -> torch.Tensor:
+    """Inverse of :func:`_unpatchify`."""
+    b, c, h, w = z.shape
+    return (
+        z.view(b, c, h // 2, 2, w // 2, 2)
+        .permute(0, 1, 3, 5, 2, 4)
+        .reshape(b, c * 4, h // 2, w // 2)
+    )
+
+
+class _MossRecolorer:
+    def __init__(self, core: CNSRecolorer):
+        self.core = core
+
+    def recolor(self, white: torch.Tensor, sigma_s: float) -> torch.Tensor:
+        return _patchify(self.core.recolor(_unpatchify(white), sigma_s))
+
+
+def _is_moss(model) -> bool:
+    try:
+        dit = model.inner_model.model_patcher.get_model_object("diffusion_model")
+    except Exception:  # noqa: BLE001 - unknown wrapper: treat as Anima
+        return False
+    return hasattr(dit, "video_head_modulation") and hasattr(dit, "final_norm_video")
+
+
+# ---------------------------------------------------------------------------
+# Lazy γ per model family — load each npz once, build a fresh recolorer per
+# sample (so a per-sample aspect change can't get pinned by a stale aspect lock).
+# ---------------------------------------------------------------------------
+
+_GAMMA_ARRAYS: dict = {}
 _GAMMA_LOCK = threading.Lock()
 
 
-def _load_gamma_arrays() -> dict:
-    global _GAMMA_ARRAYS
-    if _GAMMA_ARRAYS is None:
+def _load_gamma_arrays(family: str) -> dict:
+    if family not in _GAMMA_ARRAYS:
         with _GAMMA_LOCK:
-            if _GAMMA_ARRAYS is None:
-                path = get_default_gamma_path()
+            if family not in _GAMMA_ARRAYS:
+                path = MOSS_GAMMA_PATH if family == "moss" else get_default_gamma_path()
                 d = np.load(path)
-                _GAMMA_ARRAYS = {k: d[k] for k in ("gamma", "aspects", "sigmas")}
-    return _GAMMA_ARRAYS
+                _GAMMA_ARRAYS[family] = {k: d[k] for k in ("gamma", "aspects", "sigmas")}
+                logger.info("CNS: %s γ from %s", family, path)
+    return _GAMMA_ARRAYS[family]
 
 
-def _make_recolorer(strength: float = 1.0) -> CNSRecolorer:
-    a = _load_gamma_arrays()
-    return CNSRecolorer(a["gamma"], a["aspects"], a["sigmas"], strength=strength)
+def _make_recolorer(strength: float = 1.0, family: str = "anima"):
+    a = _load_gamma_arrays(family)
+    core = CNSRecolorer(a["gamma"], a["aspects"], a["sigmas"], strength=strength)
+    return _MossRecolorer(core) if family == "moss" else core
 
 
 # ---------------------------------------------------------------------------
@@ -227,7 +277,7 @@ def sample_er_sde_cns(
     )
     from comfy.utils import model_trange as trange
 
-    recolorer = _make_recolorer(strength=1.0)
+    recolorer = _make_recolorer(strength=1.0, family="moss" if _is_moss(model) else "anima")
 
     extra_args = {} if extra_args is None else extra_args
     seed = extra_args.get("seed", None)
@@ -317,6 +367,6 @@ def register_cns_sampler() -> None:
         samplers = comfy.samplers.KSampler.SAMPLERS
         if CNS_SAMPLER_NAME not in samplers:
             samplers.append(CNS_SAMPLER_NAME)
-        logger.info("CNS: registered sampler '%s' (Anima-calibrated colored ER-SDE)", CNS_SAMPLER_NAME)
+        logger.info("CNS: registered sampler '%s' (colored ER-SDE; Anima / MOSS γ)", CNS_SAMPLER_NAME)
     except Exception as e:  # noqa: BLE001 — never break the node pack over this
         logger.warning("CNS: failed to register '%s' sampler (%s)", CNS_SAMPLER_NAME, e)
