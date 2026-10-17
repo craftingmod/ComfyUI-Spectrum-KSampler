@@ -487,5 +487,56 @@
         "tooltip": "Spectrum が DiT block を skip してよい安全基準です。legacy は最速の既存動作、conservative は wrapper/shape/step/veto が不安全なら actual forward に戻し、strict は exact artist mix や multi-conditioning 向けに UUID がある場合だけ cache を許可します。"
       }
     }
+  },
+  "MossSpectrumKSampler": {
+    "display_name": "KSampler (Spectrum for MOSS)",
+    "description": "MOSS-Image 用の KSampler です。flow shift、uncond の block 22 skip、Spectrum forecasting、block ごとの compile を 1 つのノードで扱います。ModelSamplingSD3 + SkipLayerGuidanceDiTSimple + KSampler を置き換えます。",
+    "inputs": {
+      "model": {
+        "tooltip": "MOSS-Image MODEL です（moss-image loader）。"
+      },
+      "seed": {
+        "tooltip": "ノイズ生成に使う random seed です。"
+      },
+      "steps": {
+        "tooltip": "denoising の step 数です。MOSS pipeline の既定値は 50 です。"
+      },
+      "cfg": {
+        "tooltip": "CFG scale です。MOSS pipeline の既定値は 3 です。"
+      },
+      "sampler_name": {
+        "tooltip": "sampling アルゴリズムです。MOSS pipeline は euler です。"
+      },
+      "scheduler": {
+        "tooltip": "sigma scheduler です。MOSS pipeline に合わせるなら sgm_uniform です。"
+      },
+      "positive": {
+        "tooltip": "positive conditioning です。"
+      },
+      "negative": {
+        "tooltip": "negative conditioning です。"
+      },
+      "latent_image": {
+        "tooltip": "denoise する latent です。"
+      },
+      "denoise": {
+        "tooltip": "denoise の強さです。"
+      },
+      "shift": {
+        "tooltip": "flow shift（ModelSamplingSD3）です。MOSS pipeline の既定値は 5 です。"
+      },
+      "uncond_skip_layers": {
+        "tooltip": "uncond branch で飛ばす block 番号です（カンマ区切り、空なら通常の CFG）。MOSS pipeline の既定値は 22 です。"
+      },
+      "spectrum": {
+        "tooltip": "Spectrum feature forecasting を有効にします。"
+      },
+      "flex_window": {
+        "tooltip": "actual forward のたびに Spectrum window を広げる量です。50 step では 0.25 / 0.5 / 1.0 で actual forward が 22 / 19 / 16 回です。"
+      },
+      "compile": {
+        "tooltip": "DiT の各 block に torch.compile（inductor、dynamic shape）を適用します。最初の sample でコンパイルし、C++ コンパイラがなければ eager で実行します。"
+      }
+    }
   }
 }

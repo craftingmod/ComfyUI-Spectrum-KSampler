@@ -487,5 +487,56 @@
         "tooltip": "Spectrum 是否可 skip DiT block 的安全標準。legacy 是最快的既有行為；conservative 會在 wrapper/shape/step/veto 不安全時改用 actual forward；strict 適合 exact artist mix 或 multi-conditioning，只有 UUID 可用時才允許 cache。"
       }
     }
+  },
+  "MossSpectrumKSampler": {
+    "display_name": "KSampler (Spectrum for MOSS)",
+    "description": "MOSS-Image 的 KSampler：在一个节点内完成 flow shift、uncond 跳过 block 22、Spectrum 预测与逐 block compile。替代 ModelSamplingSD3 + SkipLayerGuidanceDiTSimple + KSampler。",
+    "inputs": {
+      "model": {
+        "tooltip": "MOSS-Image MODEL（moss-image loader）。"
+      },
+      "seed": {
+        "tooltip": "生成噪声所用的随机种子。"
+      },
+      "steps": {
+        "tooltip": "去噪步数。MOSS pipeline 默认 50。"
+      },
+      "cfg": {
+        "tooltip": "CFG 强度。MOSS pipeline 默认 3。"
+      },
+      "sampler_name": {
+        "tooltip": "采样算法。MOSS pipeline 使用 euler。"
+      },
+      "scheduler": {
+        "tooltip": "sigma 调度器。与 MOSS pipeline 对齐请用 sgm_uniform。"
+      },
+      "positive": {
+        "tooltip": "正向 conditioning。"
+      },
+      "negative": {
+        "tooltip": "负向 conditioning。"
+      },
+      "latent_image": {
+        "tooltip": "要去噪的 latent。"
+      },
+      "denoise": {
+        "tooltip": "去噪强度。"
+      },
+      "shift": {
+        "tooltip": "flow shift（ModelSamplingSD3）。MOSS pipeline 默认 5。"
+      },
+      "uncond_skip_layers": {
+        "tooltip": "在 uncond 分支跳过的 block 编号（逗号分隔，留空为普通 CFG）。MOSS pipeline 默认 22。"
+      },
+      "spectrum": {
+        "tooltip": "启用 Spectrum 特征预测。"
+      },
+      "flex_window": {
+        "tooltip": "每次 actual forward 后 Spectrum window 的增长量。50 步时 0.25 / 0.5 / 1.0 分别运行 22 / 19 / 16 次 actual forward。"
+      },
+      "compile": {
+        "tooltip": "对每个 DiT block 做 torch.compile（inductor，动态 shape）。在第一次采样时编译；没有 C++ 编译器时以 eager 运行。"
+      }
+    }
   }
 }

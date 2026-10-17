@@ -18,6 +18,7 @@ from .mod_guidance_layouts import (
     SCHEDULE_BASIS_NATIVE,
 )
 from .smc_cfg import install_smc_cfg
+from .moss import MossSpectrumKSampler
 from .spectrum import COMPAT_POLICIES, apply_dit_spectrum_patch, spectrum_sample
 
 logger = logging.getLogger(__name__)
@@ -1971,6 +1972,7 @@ NODE_CLASS_MAPPINGS = {
     "DiTCFGFSGPatch": DiTCFGFSGPatch,
     "DiTSpectrumPatch": DiTSpectrumPatch,
     "DiTSpectrumPatchAdvanced": DiTSpectrumPatchAdvanced,
+    "MossSpectrumKSampler": MossSpectrumKSampler,
     # Deprecated aliases — the mod-guidance + SEA samplers are now folded into
     # the unified SpectrumKSampler (mod_w_profile + refresh_ratio dials). These
     # keys are kept so saved workflows referencing them still load; they are
@@ -1989,4 +1991,5 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "DiTCFGFSGPatch": "DiT CFG-FSG/DCW Patch",
     "DiTSpectrumPatch": "DiT Spectrum Patch",
     "DiTSpectrumPatchAdvanced": "DiT Spectrum Patch Advanced",
+    "MossSpectrumKSampler": "KSampler (Spectrum for MOSS)",
 }

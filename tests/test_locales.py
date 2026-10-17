@@ -170,6 +170,23 @@ EXPECTED_INPUTS = {
         "verbose",
         "compat_policy",
     },
+    "MossSpectrumKSampler": {
+        "model",
+        "seed",
+        "steps",
+        "cfg",
+        "sampler_name",
+        "scheduler",
+        "positive",
+        "negative",
+        "latent_image",
+        "denoise",
+        "shift",
+        "uncond_skip_layers",
+        "spectrum",
+        "flex_window",
+        "compile",
+    },
 }
 
 

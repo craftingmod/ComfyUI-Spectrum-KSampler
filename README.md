@@ -11,6 +11,7 @@ Tuned for the [Anima](https://github.com/sorryhyun/anima_lora) DiT — its modul
   - [Standalone MODEL patcher](#standalone-model-patcher) — wire Spectrum before stock samplers
   - [DiT Spectrum Patch Advanced](#dit-spectrum-patch-advanced) — safer cache policy for complex sampler flows
   - [Standalone correction patchers](#standalone-correction-patchers) — DCW / SMC-CFG / CFG++ / FSG as MODEL patches
+  - [KSampler (Spectrum for MOSS)](#ksampler-spectrum-for-moss) — MOSS-Image sampler: shift, uncond skip-22, Spectrum, per-block compile
 - [Parameters](#parameters) — Spectrum knobs + tuning tips
 - [Modulation guidance](#modulation-guidance) — AdaLN-side quality steering via `pooled_text_proj`
 - [SMC-CFG (α-adaptive sliding-mode CFG)](#smc-cfg-α-adaptive-sliding-mode-cfg) — velocity-space CFG combine modification
@@ -105,6 +106,18 @@ Set the patcher's `steps` to the downstream sampler's `steps`, then start with `
 For wrapper chains, `conservative` and `strict` treat an existing `model_function_wrapper` as unsafe unless it explicitly sets `__spectrum_cache_safe__ = True`. This protects wrappers that must run on every model call, but it also means untagged cache-neutral wrappers, including attention-backend swaps, run full actual DiT forwards under those policies. Use `legacy` for the fastest untagged wrapper chain, or tag cache-neutral wrappers before Spectrum.
 
 Why this matters: Spectrum forecasts DiT features from previous actual steps. In a simple prompt there is usually one positive branch and one negative branch. In exact artist mix, each artist is a separate positive conditioning branch. `strict` keeps those branch histories separate by requiring ComfyUI UUID keys before caching; without them, it avoids cached predictions rather than mixing unrelated artist trajectories.
+
+### KSampler (Spectrum for MOSS)
+
+**KSampler (Spectrum for MOSS)** is a sampler for [MOSS-Image](https://github.com/OpenMOSS/MOSS-Image) models loaded by the `moss-image` node. It replaces the `ModelSamplingSD3` → `SkipLayerGuidanceDiTSimple` → `KSampler` chain of the official workflow, and its defaults are the MOSS pipeline's: shift 5, CFG 3 with block 22 skipped on the uncond branch, 50 Euler steps on `sgm_uniform`.
+
+```
+MOSS-Image loader -> KSampler (Spectrum for MOSS) -> VAE Decode
+```
+
+- **Spectrum.** MOSS has no Anima-style `final_layer`, so the node forecasts the image tokens entering MOSS's head (`final_norm_video`). On cached steps it runs only the time embedding and the head, skipping the text refiner and all blocks. Cond and uncond are forecast separately. At 50 steps, `flex_window` 0.5 gives 19 actual forwards (anima_lora's MOSS bench default).
+- **Compile** (`compile`, on by default). The node runs `torch.compile` on each of `diffusion_model.layers` with dynamic shapes. MOSS never pads prompts, so the joint length changes with every prompt and between cond and uncond. Compilation happens on the first sample. Without a C++ compiler the node falls back to eager. Compiled blocks need a non-dynamic-VRAM copy of the DiT. The node builds that copy once per checkpoint and reuses it, so it stays in host RAM next to ComfyUI's own copy.
+- **Measured** sampling time (1024², 50 steps, NVIDIA GeForce RTX 5070 Ti): stock `ModelSamplingSD3` → `SkipLayerGuidanceDiTSimple` → `KSampler` 68 s; this node 25.9 s with compile off, 21.2 s with compile on.
 
 ### Standalone correction patchers
 

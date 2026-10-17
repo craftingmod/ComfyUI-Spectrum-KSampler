@@ -487,5 +487,56 @@
         "tooltip": "Spectrum이 DiT block을 건너뛰는 안전 기준입니다. legacy는 가장 빠른 기존 방식, conservative는 wrapper/shape/step/veto가 불안전하면 actual forward로 대체, strict는 exact artist mix나 multi-conditioning용으로 UUID가 있을 때만 cache를 허용합니다."
       }
     }
+  },
+  "MossSpectrumKSampler": {
+    "display_name": "KSampler (Spectrum for MOSS)",
+    "description": "MOSS-Image용 KSampler입니다. flow shift, uncond block 22 skip, Spectrum forecasting, block별 compile을 한 노드에서 처리합니다. ModelSamplingSD3 + SkipLayerGuidanceDiTSimple + KSampler를 대체합니다.",
+    "inputs": {
+      "model": {
+        "tooltip": "MOSS-Image MODEL입니다(moss-image loader)."
+      },
+      "seed": {
+        "tooltip": "noise 생성에 쓰는 random seed입니다."
+      },
+      "steps": {
+        "tooltip": "denoising step 수입니다. MOSS pipeline 기본값은 50입니다."
+      },
+      "cfg": {
+        "tooltip": "CFG scale입니다. MOSS pipeline 기본값은 3입니다."
+      },
+      "sampler_name": {
+        "tooltip": "sampling 알고리즘입니다. MOSS pipeline은 euler입니다."
+      },
+      "scheduler": {
+        "tooltip": "sigma scheduler입니다. MOSS pipeline에 맞추려면 sgm_uniform을 씁니다."
+      },
+      "positive": {
+        "tooltip": "positive conditioning입니다."
+      },
+      "negative": {
+        "tooltip": "negative conditioning입니다."
+      },
+      "latent_image": {
+        "tooltip": "denoise할 latent입니다."
+      },
+      "denoise": {
+        "tooltip": "denoise 강도입니다."
+      },
+      "shift": {
+        "tooltip": "flow shift(ModelSamplingSD3)입니다. MOSS pipeline 기본값은 5입니다."
+      },
+      "uncond_skip_layers": {
+        "tooltip": "uncond branch에서 건너뛸 block 번호입니다(쉼표 구분, 비우면 일반 CFG). MOSS pipeline 기본값은 22입니다."
+      },
+      "spectrum": {
+        "tooltip": "Spectrum feature forecasting을 켭니다."
+      },
+      "flex_window": {
+        "tooltip": "actual forward 이후 Spectrum window 크기를 늘리는 값입니다. 50 step 기준 0.25 / 0.5 / 1.0이면 actual forward가 22 / 19 / 16번입니다."
+      },
+      "compile": {
+        "tooltip": "DiT block마다 torch.compile(inductor, dynamic shape)을 겁니다. 첫 sample에서 컴파일하며, C++ 컴파일러가 없으면 eager로 실행합니다."
+      }
+    }
   }
 }
