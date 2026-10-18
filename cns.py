@@ -26,9 +26,9 @@ the math is identical to stock ``er_sde``.
 Notes:
   * **Anima- and MOSS-calibrated.** The auto-downloaded γ is measured on
     Anima's spectral-bias staircase at cfg=4. A MOSS-Image model (detected from
-    the live diffusion_model) switches to a bundled MOSS γ — the cfg 4 one when
-    the guider's cfg is ≥ 3.5, else the cfg 3 one — and recolors on the
-    un-patchified grid. Any other model gets the Anima γ, mis-calibrated (still
+    the live diffusion_model) switches to a bundled MOSS γ — Base or SFT by a
+    weight fingerprint, at the calibrated cfg (3/4/5) nearest the guider's — and
+    recolors on the un-patchified grid. Any other model gets the Anima γ, mis-calibrated (still
     variance-conserving, so degraded-not-broken).
   * **er_sde only.** This is the stochastic ER-SDE solver; there is no ODE/euler
     surface for colored noise (white draw → no-op). Composes with the Spectrum
@@ -172,20 +172,32 @@ class CNSRecolorer(_CNSRecolorerCore):
 
 # ---------------------------------------------------------------------------
 # MOSS-Image: its own γ, bundled (calibrated in anima_lora,
-# bench/moss_spectrum/cns_calibrate.py, shift 5, 50 steps: cfg 3 at 1024², cfg 4
-# at 7 aspects AR 0.57–1.75), picked by the guider's cfg, and the FFT on the
-# un-patchified 32 ch /8 grid (anima_lora library/moss/cns.py). On the packed
-# 128 ch grid the top octave of the FLUX.2 latent sits in the 2×2 phase channels,
-# out of reach of a spatial filter. ComfyUI's Flux2 VAE packs (c pi pj), the
-# same order.
+# bench/moss_spectrum/cns_calibrate.py, shift 5, 50 steps), one per variant and
+# cfg, picked by the variant fingerprint and the guider's nearest cfg, and the
+# FFT on the un-patchified 32 ch /8 grid (anima_lora library/moss/cns.py). On the
+# packed 128 ch grid the top octave of the FLUX.2 latent sits in the 2×2 phase
+# channels, out of reach of a spatial filter. ComfyUI's Flux2 VAE packs
+# (c pi pj), the same order.
 # ---------------------------------------------------------------------------
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-MOSS_GAMMA_PATHS = {
-    "moss_cfg3": os.path.join(_HERE, "moss_cns_gamma.npz"),
-    "moss_cfg4": os.path.join(_HERE, "moss_cns_gamma_cfg4.npz"),
+# (variant, cfg) → γ; mirrors anima_lora library.moss.cns.GAMMA_PATHS.
+MOSS_GAMMAS = {
+    ("base", 3.0): "moss_cns_gamma.npz",
+    ("base", 4.0): "moss_cns_gamma_cfg4.npz",
+    ("base", 5.0): "moss_cns_gamma_cfg5.npz",
+    ("sft", 3.0): "moss_cns_gamma_sft_cfg3.npz",
+    ("sft", 4.0): "moss_cns_gamma_sft_cfg4.npz",
+    ("sft", 5.0): "moss_cns_gamma_sft_cfg5.npz",
 }
-MOSS_CFG4_MIN = 3.5
+MOSS_GAMMA_PATHS = {
+    f"moss_{v}_cfg{c:g}": os.path.join(_HERE, f) for (v, c), f in MOSS_GAMMAS.items()
+}
+# Base and SFT differ in the transformer only; time_embedding.2.bias moves ~2 %
+# between them, well clear of bf16/fp8 rounding. Score = projection of the live
+# bias onto (SFT − Base): 0 for Base, 1 for SFT.
+_FINGERPRINT_PATH = os.path.join(_HERE, "moss_variant_fingerprint.npz")
+_FINGERPRINT: dict = {}
 
 
 def _unpatchify(z: torch.Tensor) -> torch.Tensor:
@@ -224,13 +236,37 @@ def _is_moss(model) -> bool:
     return hasattr(dit, "video_head_modulation") and hasattr(dit, "final_norm_video")
 
 
+def _moss_variant(dit) -> str:
+    """``base`` or ``sft`` from the live weights; ``base`` if they can't be read."""
+    if not _FINGERPRINT:
+        d = np.load(_FINGERPRINT_PATH)
+        _FINGERPRINT.update(base=torch.from_numpy(d["base"]), sft=torch.from_numpy(d["sft"]))
+    base, sft = _FINGERPRINT["base"], _FINGERPRINT["sft"]
+    try:
+        x = dit.time_embedding[2].bias.detach().float().cpu()
+    except Exception as e:  # noqa: BLE001 - meta / offloaded weight
+        logger.warning("CNS: can't read MOSS weights for the variant check (%s); using Base γ", e)
+        return "base"
+    if x.shape != base.shape:
+        return "base"
+    d = sft - base
+    score = float(((x - base) * d).sum() / (d * d).sum())
+    return "sft" if score >= 0.5 else "base"
+
+
 def _gamma_family(model) -> str:
-    """``anima``, or the MOSS γ nearest the guider's cfg (``model.inner_model`` is
-    the ``CFGGuider``; a guider without ``cfg`` gets the cfg 3 γ)."""
+    """``anima``, or the MOSS γ for the model's variant at the calibrated cfg
+    nearest the guider's (``model.inner_model`` is the ``CFGGuider``; a guider
+    without ``cfg`` gets the cfg 3 γ)."""
     if not _is_moss(model):
         return "anima"
+    dit = model.inner_model.model_patcher.get_model_object("diffusion_model")
+    variant = _moss_variant(dit)
     cfg = getattr(model.inner_model, "cfg", None)
-    return "moss_cfg4" if isinstance(cfg, (int, float)) and cfg >= MOSS_CFG4_MIN else "moss_cfg3"
+    if not isinstance(cfg, (int, float)):
+        cfg = 3.0
+    nearest = min((c for v, c in MOSS_GAMMAS if v == variant), key=lambda c: abs(c - cfg))
+    return f"moss_{variant}_cfg{nearest:g}"
 
 
 # ---------------------------------------------------------------------------
