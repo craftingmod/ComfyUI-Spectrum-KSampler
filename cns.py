@@ -26,7 +26,8 @@ the math is identical to stock ``er_sde``.
 Notes:
   * **Anima- and MOSS-calibrated.** The auto-downloaded γ is measured on
     Anima's spectral-bias staircase at cfg=4. A MOSS-Image model (detected from
-    the live diffusion_model) switches to the bundled MOSS γ and recolors on the
+    the live diffusion_model) switches to a bundled MOSS γ — the cfg 4 one when
+    the guider's cfg is ≥ 3.5, else the cfg 3 one — and recolors on the
     un-patchified grid. Any other model gets the Anima γ, mis-calibrated (still
     variance-conserving, so degraded-not-broken).
   * **er_sde only.** This is the stochastic ER-SDE solver; there is no ODE/euler
@@ -171,14 +172,20 @@ class CNSRecolorer(_CNSRecolorerCore):
 
 # ---------------------------------------------------------------------------
 # MOSS-Image: its own γ, bundled (calibrated in anima_lora,
-# bench/moss_spectrum/cns_calibrate.py, 1024² cfg 3 shift 5), and the FFT on the
+# bench/moss_spectrum/cns_calibrate.py, shift 5, 50 steps: cfg 3 at 1024², cfg 4
+# at 7 aspects AR 0.57–1.75), picked by the guider's cfg, and the FFT on the
 # un-patchified 32 ch /8 grid (anima_lora library/moss/cns.py). On the packed
 # 128 ch grid the top octave of the FLUX.2 latent sits in the 2×2 phase channels,
 # out of reach of a spatial filter. ComfyUI's Flux2 VAE packs (c pi pj), the
 # same order.
 # ---------------------------------------------------------------------------
 
-MOSS_GAMMA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "moss_cns_gamma.npz")
+_HERE = os.path.dirname(os.path.abspath(__file__))
+MOSS_GAMMA_PATHS = {
+    "moss_cfg3": os.path.join(_HERE, "moss_cns_gamma.npz"),
+    "moss_cfg4": os.path.join(_HERE, "moss_cns_gamma_cfg4.npz"),
+}
+MOSS_CFG4_MIN = 3.5
 
 
 def _unpatchify(z: torch.Tensor) -> torch.Tensor:
@@ -217,6 +224,15 @@ def _is_moss(model) -> bool:
     return hasattr(dit, "video_head_modulation") and hasattr(dit, "final_norm_video")
 
 
+def _gamma_family(model) -> str:
+    """``anima``, or the MOSS γ nearest the guider's cfg (``model.inner_model`` is
+    the ``CFGGuider``; a guider without ``cfg`` gets the cfg 3 γ)."""
+    if not _is_moss(model):
+        return "anima"
+    cfg = getattr(model.inner_model, "cfg", None)
+    return "moss_cfg4" if isinstance(cfg, (int, float)) and cfg >= MOSS_CFG4_MIN else "moss_cfg3"
+
+
 # ---------------------------------------------------------------------------
 # Lazy γ per model family — load each npz once, build a fresh recolorer per
 # sample (so a per-sample aspect change can't get pinned by a stale aspect lock).
@@ -230,7 +246,7 @@ def _load_gamma_arrays(family: str) -> dict:
     if family not in _GAMMA_ARRAYS:
         with _GAMMA_LOCK:
             if family not in _GAMMA_ARRAYS:
-                path = MOSS_GAMMA_PATH if family == "moss" else get_default_gamma_path()
+                path = MOSS_GAMMA_PATHS.get(family) or get_default_gamma_path()
                 d = np.load(path)
                 _GAMMA_ARRAYS[family] = {k: d[k] for k in ("gamma", "aspects", "sigmas")}
                 logger.info("CNS: %s γ from %s", family, path)
@@ -240,7 +256,7 @@ def _load_gamma_arrays(family: str) -> dict:
 def _make_recolorer(strength: float = 1.0, family: str = "anima"):
     a = _load_gamma_arrays(family)
     core = CNSRecolorer(a["gamma"], a["aspects"], a["sigmas"], strength=strength)
-    return _MossRecolorer(core) if family == "moss" else core
+    return _MossRecolorer(core) if family in MOSS_GAMMA_PATHS else core
 
 
 # ---------------------------------------------------------------------------
@@ -277,7 +293,7 @@ def sample_er_sde_cns(
     )
     from comfy.utils import model_trange as trange
 
-    recolorer = _make_recolorer(strength=1.0, family="moss" if _is_moss(model) else "anima")
+    recolorer = _make_recolorer(strength=1.0, family=_gamma_family(model))
 
     extra_args = {} if extra_args is None else extra_args
     seed = extra_args.get("seed", None)
