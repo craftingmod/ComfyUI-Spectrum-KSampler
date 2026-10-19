@@ -223,8 +223,15 @@ def _clone_for_compile(model):
     one cached delegate model across samples, so only the first one loads it."""
     init = getattr(model, "cached_patcher_init", None)
     if init is not None and getattr(model, "is_dynamic", lambda: False)():
-        override = _static_base(init).get_clone_model_override()
-        return model.clone(disable_dynamic=True, model_override=override)
+        base = _static_base(init)
+        m = model.clone(disable_dynamic=True, model_override=base.get_clone_model_override())
+        # Parent the clone on the patcher that owns its model. With the dynamic
+        # input as parent, each sample's LoadedModel falls back to a patcher whose
+        # .model is the dynamic one, so is_clone() never matches it again: one
+        # stale entry per sample, all "memory leak with model MOSSImage" once
+        # the workflow's loader chain is dropped while _STATIC_BASE keeps the DiT.
+        m.parent = base
+        return m
     try:
         return model.clone(disable_dynamic=True)
     except TypeError:
