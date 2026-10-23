@@ -120,11 +120,22 @@ def _capture_pre_hook(module, args):
         state.moss_feats.extend(args[0].detach().clone().unbind(0))
 
 
+def _capture_block_hook(module, args, output):
+    state = getattr(module, "_spectrum_state", None)
+    if state is not None and state.moss_feats is not None:
+        # Native MOSS fuses final_norm_video, bypassing its module hooks.
+        tokens = state.input_tokens
+        state.moss_feats.extend(output[:, :tokens].detach().clone().unbind(0))
+
+
 def _ensure_capture_hook(dit) -> None:
-    norm = dit.final_norm_video
+    norm = dit.layers[-1] if _is_native_moss(dit) else dit.final_norm_video
     if getattr(norm, "_spectrum_hook_installed", False):
         return
-    norm.register_forward_pre_hook(_capture_pre_hook)
+    if _is_native_moss(dit):
+        norm.register_forward_hook(_capture_block_hook)
+    else:
+        norm.register_forward_pre_hook(_capture_pre_hook)
     norm._spectrum_hook_installed = True
 
 
@@ -134,23 +145,28 @@ def _require_moss(model):
     model_sampling = getattr(base, "model_sampling", None)
     native = _is_native_moss(dit)
     required = (
-        _MOSS_HEAD[:-1] + ("pe_embedder", "shared_block_modulation")
+        _MOSS_HEAD[:-1] + ("shared_block_modulation",)
         if native
         else _MOSS_HEAD
     )
     missing = [n for n in required if dit is None or not hasattr(dit, n)]
     if dit is None or missing or model_sampling is None:
+        model_type = type(dit).__name__ if dit is not None else "None"
         raise RuntimeError(
             "Spectrum for MOSS needs a MOSS-Image MODEL (ComfyUI Load Diffusion Model "
             "or moss-image loader); "
-            f"diffusion_model is missing: {', '.join(missing) or 'model_sampling'}"
+            f"diffusion_model is missing: {', '.join(missing) or 'model_sampling'} "
+            f"(diffusion_model type: {model_type})"
         )
     return dit, model_sampling
 
 
 def _is_native_moss(dit) -> bool:
     """ComfyUI's built-in MOSSImage uses a different timestep embedding API."""
-    return dit is not None and hasattr(dit, "pe_embedder") and not hasattr(dit, "freq_dim")
+    if dit is None:
+        return False
+    cls = type(dit)
+    return cls.__name__ == "MOSSImage" or cls.__module__.startswith("comfy.ldm.moss_image.")
 
 
 def _moss_head(dit, timestep: torch.Tensor, feat: torch.Tensor, height: int, width: int):
@@ -348,7 +364,7 @@ def apply_moss_spectrum_patch(
         )
         _maybe_rearm_for_new_execution(state)
         _ensure_capture_hook(live_dit)
-        norm = live_dit.final_norm_video
+        norm = live_dit.layers[-1] if _is_native_moss(live_dit) else live_dit.final_norm_video
 
         if state.patch_consumed:
             norm._spectrum_state = None
@@ -383,6 +399,7 @@ def apply_moss_spectrum_patch(
             return live_model_sampling.calculate_denoised(timestep, out.float(), input_x)
 
         state.mode = "actual"
+        state.input_tokens = input_x.shape[-2] * input_x.shape[-1]
         state.moss_feats = []
         try:
             result = actual_forward(apply_model, args, input_x, timestep, c)
@@ -390,7 +407,7 @@ def apply_moss_spectrum_patch(
         finally:
             state.moss_feats = None
         if state.active and valid_chunks and len(feats) == input_x.shape[0]:
-            _update_forecasters(state, torch.cat(feats), input_x, keys)
+            _update_forecasters(state, torch.stack(feats), input_x, keys)
         elif state.verbose:
             logger.warning(
                 "Spectrum for MOSS: captured %d features for batch %d "
@@ -515,7 +532,7 @@ class MossSpectrumKSampler:
         if native_moss:
             from comfy_extras.nodes_model_advanced import ModelSamplingAuraFlow
 
-            m = ModelSamplingAuraFlow().patch(m, shift)[0]
+            m = ModelSamplingAuraFlow().patch_aura(m, shift)[0]
         else:
             from comfy_extras.nodes_model_advanced import ModelSamplingSD3
 
