@@ -117,7 +117,7 @@ class MossSpectrumState(SpectrumState):
 def _capture_pre_hook(module, args):
     state = getattr(module, "_spectrum_state", None)
     if state is not None and state.moss_feats is not None:
-        state.moss_feats.append(args[0].detach().clone())
+        state.moss_feats.extend(args[0].detach().clone().unbind(0))
 
 
 def _ensure_capture_hook(dit) -> None:
@@ -132,32 +132,54 @@ def _require_moss(model):
     base = getattr(model, "model", None)
     dit = getattr(base, "diffusion_model", None)
     model_sampling = getattr(base, "model_sampling", None)
-    missing = [n for n in _MOSS_HEAD if dit is None or not hasattr(dit, n)]
+    native = _is_native_moss(dit)
+    required = (
+        _MOSS_HEAD[:-1] + ("pe_embedder", "shared_block_modulation")
+        if native
+        else _MOSS_HEAD
+    )
+    missing = [n for n in required if dit is None or not hasattr(dit, n)]
     if dit is None or missing or model_sampling is None:
         raise RuntimeError(
-            "Spectrum for MOSS needs a MOSS-Image MODEL (moss-image loader); "
+            "Spectrum for MOSS needs a MOSS-Image MODEL (ComfyUI Load Diffusion Model "
+            "or moss-image loader); "
             f"diffusion_model is missing: {', '.join(missing) or 'model_sampling'}"
         )
     return dit, model_sampling
 
 
+def _is_native_moss(dit) -> bool:
+    """ComfyUI's built-in MOSSImage uses a different timestep embedding API."""
+    return dit is not None and hasattr(dit, "pe_embedder") and not hasattr(dit, "freq_dim")
+
+
 def _moss_head(dit, timestep: torch.Tensor, feat: torch.Tensor, height: int, width: int):
     """The model's head on forecast features; mirrors the tail of
-    ``MOSSImageTransformer.forward`` with the batch done at once (the head is
+    either ComfyUI MOSS implementation with the batch done at once (the head is
     per-token)."""
     batch = feat.shape[0]
     times = timestep.to(feat.device, torch.float32).reshape(-1).expand(batch)
-    half = dit.freq_dim // 2
-    freq = 10000 ** (-torch.arange(half, device=times.device, dtype=torch.float64) / half)
-    phase = times.double()[:, None] * freq
-    embedding = torch.cat((phase.cos(), phase.sin()), -1).float()
-    time = dit.time_embedding(embedding.to(dit.time_embedding[0].weight.dtype)).float()
-    head = dit.video_head_modulation(time.to(dit.video_head_modulation.weight.dtype)).view(
-        batch, 2, -1
-    )
-    x = dit.final_norm_video(feat.to(dit.final_norm_video.weight.dtype))
-    x = x * (1 + head[:, 1, None]) + head[:, 0, None]
-    x = dit.final_linear_video(x.to(dit.final_linear_video.weight.dtype))
+    if _is_native_moss(dit):
+        from comfy.ldm.flux.layers import timestep_embedding
+
+        embedding = timestep_embedding(times, 256).to(feat.dtype)
+        time = dit.time_embedding(embedding)
+        shift, scale = dit.video_head_modulation(time).view(batch, 2, -1).unbind(1)
+        x = dit.final_norm_video(feat)
+        x = x * (1 + scale[:, None]) + shift[:, None]
+        x = dit.final_linear_video(x)
+    else:
+        half = dit.freq_dim // 2
+        freq = 10000 ** (-torch.arange(half, device=times.device, dtype=torch.float64) / half)
+        phase = times.double()[:, None] * freq
+        embedding = torch.cat((phase.cos(), phase.sin()), -1).float()
+        time = dit.time_embedding(embedding.to(dit.time_embedding[0].weight.dtype)).float()
+        head = dit.video_head_modulation(time.to(dit.video_head_modulation.weight.dtype)).view(
+            batch, 2, -1
+        )
+        x = dit.final_norm_video(feat.to(dit.final_norm_video.weight.dtype))
+        x = x * (1 + head[:, 1, None]) + head[:, 0, None]
+        x = dit.final_linear_video(x.to(dit.final_linear_video.weight.dtype))
     return x.transpose(1, 2).reshape(batch, -1, height, width)
 
 
@@ -391,11 +413,11 @@ def _float(default, lo, hi, step, tooltip):
 class MossSpectrumKSampler:
     """KSampler for MOSS-Image with the pipeline's sampling setup built in.
 
-    ``pipeline_moss_image.py`` defaults: flow shift 5 (``ModelSamplingSD3``),
-    CFG 3 with block 22 skipped on the uncond branch
-    (``SkipLayerGuidanceDiTSimple``), 50 Euler steps on ``sgm_uniform``. Spectrum
-    and per-block compile ride the same MODEL clone; sampling is ComfyUI's own
-    ``common_ksampler``.
+    Defaults: flow shift 5 (``ModelSamplingSD3`` for the HF plugin loader,
+    ``ModelSamplingAuraFlow`` for ComfyUI's native loader), CFG 3 with block 22
+    skipped on the uncond branch (``SkipLayerGuidanceDiTSimple``), and 50 Euler
+    steps on ``sgm_uniform``. Spectrum and per-block compile ride the same MODEL
+    clone; sampling is ComfyUI's own ``common_ksampler``.
     """
 
     @classmethod
@@ -404,7 +426,10 @@ class MossSpectrumKSampler:
 
         return {
             "required": {
-                "model": ("MODEL", {"tooltip": "MOSS-Image MODEL (moss-image loader)."}),
+                "model": (
+                    "MODEL",
+                    {"tooltip": "MOSS-Image MODEL (ComfyUI Load Diffusion Model or moss-image loader)."},
+                ),
                 "seed": (
                     "INT",
                     {"default": 0, "min": 0, "max": 0xFFFFFFFFFFFFFFFF, "control_after_generate": True},
@@ -456,8 +481,8 @@ class MossSpectrumKSampler:
     CATEGORY = "sampling"
     DESCRIPTION = (
         "KSampler for MOSS-Image: flow shift, uncond block-22 skip, Spectrum "
-        "forecasting and per-block compile in one node. Replaces ModelSamplingSD3 "
-        "+ SkipLayerGuidanceDiTSimple + KSampler."
+        "forecasting and per-block compile in one node. Supports the native "
+        "ComfyUI and HF plugin loaders."
     )
 
     def sample(
@@ -479,13 +504,22 @@ class MossSpectrumKSampler:
         compile=True,
     ):
         import nodes
-        from comfy_extras.nodes_model_advanced import ModelSamplingSD3
         from comfy_extras.nodes_slg import SkipLayerGuidanceDiTSimple
 
+        native_moss = _is_native_moss(
+            getattr(getattr(model, "model", None), "diffusion_model", None)
+        )
         m = apply_moss_spectrum_patch(
             model, steps=steps, flex_window=flex_window, enabled=spectrum, compile=compile
         )
-        m = ModelSamplingSD3().patch(m, shift)[0]
+        if native_moss:
+            from comfy_extras.nodes_model_advanced import ModelSamplingAuraFlow
+
+            m = ModelSamplingAuraFlow().patch(m, shift)[0]
+        else:
+            from comfy_extras.nodes_model_advanced import ModelSamplingSD3
+
+            m = ModelSamplingSD3().patch(m, shift)[0]
         if uncond_skip_layers.strip():
             m = SkipLayerGuidanceDiTSimple.execute(
                 m, 0.0, 1.0, double_layers="", single_layers=uncond_skip_layers

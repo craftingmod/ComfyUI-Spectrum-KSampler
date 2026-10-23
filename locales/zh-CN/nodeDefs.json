@@ -490,10 +490,10 @@
   },
   "MossSpectrumKSampler": {
     "display_name": "KSampler (Spectrum for MOSS)",
-    "description": "MOSS-Image 的 KSampler：在一个节点内完成 flow shift、uncond 跳过 block 22、Spectrum 预测与逐 block compile。替代 ModelSamplingSD3 + SkipLayerGuidanceDiTSimple + KSampler。",
+    "description": "MOSS-Image 的 KSampler：在一个节点内完成 flow shift、uncond 跳过 block 22、Spectrum 预测与逐 block compile。支持 ComfyUI 原生加载器和 moss-image loader。",
     "inputs": {
       "model": {
-        "tooltip": "MOSS-Image MODEL（moss-image loader）。"
+        "tooltip": "MOSS-Image MODEL（ComfyUI 原生 Load Diffusion Model 或 moss-image loader）。"
       },
       "seed": {
         "tooltip": "生成噪声所用的随机种子。"

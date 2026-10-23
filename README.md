@@ -109,15 +109,17 @@ Why this matters: Spectrum forecasts DiT features from previous actual steps. In
 
 ### KSampler (Spectrum for MOSS)
 
-**KSampler (Spectrum for MOSS)** is a sampler for [MOSS-Image](https://github.com/OpenMOSS/MOSS-Image) models loaded by the `moss-image` node. It replaces the `ModelSamplingSD3` → `SkipLayerGuidanceDiTSimple` → `KSampler` chain of the official workflow, and its defaults are the MOSS pipeline's: shift 5, CFG 3 with block 22 skipped on the uncond branch, 50 Euler steps on `sgm_uniform`.
+**KSampler (Spectrum for MOSS)** supports both ComfyUI's native MOSS-Image `Load Diffusion Model` and the OpenMOSS `moss-image` loader. It includes flow shift, optional block-22 skipping on the uncond branch, Spectrum forecasting, and per-block compile. Defaults follow the MOSS pipeline: shift 5, CFG 3, 50 Euler steps on `sgm_uniform`.
 
 ```
-MOSS-Image loader -> KSampler (Spectrum for MOSS) -> VAE Decode
+Load Diffusion Model / MOSS-Image loader -> KSampler (Spectrum for MOSS) -> VAE Decode
 ```
+
+For the native loader, use a ComfyUI master/nightly that includes MOSS-Image support (commit `e087d8f6` or later), plus a `CLIP Loader` with type `moss_image` and `Load VAE`. This node uses `ModelSamplingAuraFlow` for the native model's timestep multiplier; it keeps `ModelSamplingSD3` for the HF plugin loader. Do not add a separate `ModelSamplingSD3` node to the native path. The native and HF plugin workflows use different model implementations, so use the native model workflow when switching loaders.
 
 - **Spectrum.** MOSS has no Anima-style `final_layer`, so the node forecasts the image tokens entering MOSS's head (`final_norm_video`). On cached steps it runs only the time embedding and the head, skipping the text refiner and all blocks. Cond and uncond are forecast separately. At 50 steps, `flex_window` 0.5 gives 19 actual forwards (anima_lora's MOSS bench default).
 - **Compile** (`compile`, on by default). The node runs `torch.compile` on each of `diffusion_model.layers` with dynamic shapes. MOSS never pads prompts, so the joint length changes with every prompt and between cond and uncond. Compilation happens on the first sample. Without a C++ compiler the node falls back to eager. Compiled blocks need a non-dynamic-VRAM copy of the DiT. The node builds that copy once per checkpoint and reuses it, so it stays in host RAM next to ComfyUI's own copy.
-- **Measured** sampling time (1024², 50 steps, NVIDIA GeForce RTX 5070 Ti): stock `ModelSamplingSD3` → `SkipLayerGuidanceDiTSimple` → `KSampler` 68 s; this node 25.9 s with compile off, 21.2 s with compile on.
+- **Measured** sampling time with the HF plugin loader (1024², 50 steps, NVIDIA GeForce RTX 5070 Ti): stock `ModelSamplingSD3` → `SkipLayerGuidanceDiTSimple` → `KSampler` 68 s; this node 25.9 s with compile off, 21.2 s with compile on.
 
 ### Standalone correction patchers
 

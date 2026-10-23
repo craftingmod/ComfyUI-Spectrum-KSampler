@@ -490,10 +490,10 @@
   },
   "MossSpectrumKSampler": {
     "display_name": "KSampler (Spectrum for MOSS)",
-    "description": "MOSS-Image용 KSampler입니다. flow shift, uncond block 22 skip, Spectrum forecasting, block별 compile을 한 노드에서 처리합니다. ModelSamplingSD3 + SkipLayerGuidanceDiTSimple + KSampler를 대체합니다.",
+    "description": "MOSS-Image용 KSampler입니다. flow shift, uncond block 22 skip, Spectrum forecasting, block별 compile을 한 노드에서 처리합니다. ComfyUI 기본 로더와 moss-image loader를 지원합니다.",
     "inputs": {
       "model": {
-        "tooltip": "MOSS-Image MODEL입니다(moss-image loader)."
+        "tooltip": "MOSS-Image MODEL입니다(ComfyUI 기본 Load Diffusion Model 또는 moss-image loader)."
       },
       "seed": {
         "tooltip": "noise 생성에 쓰는 random seed입니다."
